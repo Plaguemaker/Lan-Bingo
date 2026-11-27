@@ -1,9 +1,9 @@
 // Offline cache: once a player has opened the app, it keeps working with no signal.
 // Bump VERSION whenever any file changes so devices pick up the update.
-const VERSION = 'bingo-v1';
+const VERSION = 'bingo-v2';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
-  'js/app.js', 'js/core.js', 'js/scanner.js', 'vendor/qrcode.mjs', 'vendor/jsQR.js',
+  'js/app.js', 'js/core.js', 'js/scanner.js', 'js/spell.js', 'vendor/qrcode.mjs', 'vendor/jsQR.js',
 ];
 
 self.addEventListener('install', (e) => {

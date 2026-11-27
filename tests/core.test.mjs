@@ -96,3 +96,60 @@ test('result round-trips', () => {
   const r = core.decodeResult(core.encodeResult({ gid: 'abc', title: 'T', winner: 'Alex', verified: true, at: 5 }));
   assert.deepEqual(r, { gid: 'abc', title: 'T', winner: 'Alex', verified: true, at: 5 });
 });
+
+test('editing keeps the game id and every card layout when the count is unchanged', async () => {
+  const g = base();
+  const fixed = statements.map((s, i) => (i === 3 ? 'Statment 4 fixed' : s));
+  const e = core.editGame(g, { title: 'Test 2', statements: fixed });
+  assert.equal(core.gameId(e), core.gameId(g));
+  assert.equal(e.r, 1);
+  assert.equal(e.t, 'Test 2');
+  assert.deepEqual(core.makeCard(e, 'Alex'), core.makeCard(g, 'Alex'));
+  assert.ok(core.layoutKept(g, e));
+  assert.deepEqual(core.migrateMarks(g, e, 'Alex', [1, 2]), [1, 2]);
+  assert.deepEqual(core.migrateCalled(g, e, [3, 7]), [3, 7]);
+  // a second edit keeps the same id and bumps the revision
+  const e2 = core.editGame(e, { statements: fixed });
+  assert.equal(core.gameId(e2), core.gameId(g));
+  assert.equal(e2.r, 2);
+  // survives a round trip through the QR code
+  assert.deepEqual(await core.decodeGame(await core.encodeGame(e2)), e2);
+  // claims made on the old wording still verify against the edited game
+  const claim = { gid: core.gameId(g), name: 'Alex', marks: new Set([0, 1, 2, 3, 4]) };
+  const card = core.makeCard(g, 'Alex');
+  assert.ok(core.verifyClaim(e2, claim, new Set([0, 1, 2, 3, 4].map((c) => card[c]))).verified);
+});
+
+test('editing with a different count carries marks and called statements over by text', () => {
+  const g = base();
+  const card = core.makeCard(g, 'Alex');
+  const marks = [0, 1, 6];
+  const markedText = marks.map((c) => g.s[card[c]]);
+  const removed = markedText[2];
+  const fewer = statements.filter((s) => s !== removed);
+  const e = core.editGame(g, { statements: fewer });
+  assert.equal(core.gameId(e), core.gameId(g));
+  assert.equal(core.layoutKept(g, e), false);
+  const newCard = core.makeCard(e, 'Alex');
+  const moved = core.migrateMarks(g, e, 'Alex', marks);
+  const newText = moved.map((c) => e.s[newCard[c]]);
+  for (const t of markedText.slice(0, 2)) {
+    if (newCard.some((si) => si >= 0 && e.s[si] === t)) assert.ok(newText.includes(t));
+  }
+  assert.ok(!newText.includes(removed));
+  const called = core.migrateCalled(g, e, [0, statements.indexOf(removed), 29]);
+  assert.deepEqual(called.map((i) => e.s[i]), [g.s[0], g.s[29]]);
+});
+
+test('editing cannot drop below the statements a card needs', () => {
+  assert.throws(() => core.editGame(base(), { statements: statements.slice(0, 5) }), /needs at least 24/);
+});
+
+test('CSV import: single column, header, quotes, multiple columns, BOM, semicolons', () => {
+  assert.deepEqual(core.statementsFromCsv('Statement\nDog barks\n"Someone says ""hi"", twice"\n\n'),
+    ['Dog barks', 'Someone says "hi", twice']);
+  assert.deepEqual(core.statementsFromCsv('﻿A,B\r\nC,,D\r\n'), ['A', 'B', 'C', 'D']);
+  assert.deepEqual(core.statementsFromCsv('Options;\nOne;Two\n'), ['One', 'Two']);
+  assert.deepEqual(core.statementsFromCsv('"multi\nline"'), ['multi line']);
+  assert.deepEqual(core.statementsFromCsv(''), []);
+});

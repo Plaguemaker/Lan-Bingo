@@ -99,8 +99,94 @@ export function createGame({ title, statements, size = 5, free = true, win = 'li
   return game;
 }
 
+// An edited game keeps its original id (stored in `i`) so players, saved
+// progress and Bingo calls all still point at the same game.
 export function gameId(game) {
+  if (game.i) return game.i;
   return hash53(JSON.stringify([game.k, game.n, game.f, game.w, game.s])).toString(36).slice(0, 8);
+}
+
+// The host fixes statements after players already have the game.
+// Seed, grid size, free space and win rule stay the same, so:
+// - same number of statements: every card keeps its exact layout and only the
+//   wording changes (marks and Bingo calls stay valid);
+// - different number: cards are reshuffled, and marks are carried over by text.
+export function editGame(game, { title, statements }) {
+  const edited = {
+    ...game,
+    t: String(title ?? game.t).trim() || 'Bingo',
+    s: statements,
+    i: gameId(game),
+    r: (game.r || 0) + 1,
+  };
+  const problems = validateGame(edited);
+  if (problems.length) throw new Error(problems.join(' '));
+  return edited;
+}
+
+export function layoutKept(oldGame, newGame) {
+  return oldGame.s.length === newGame.s.length && oldGame.k === newGame.k
+    && oldGame.n === newGame.n && !!oldGame.f === !!newGame.f;
+}
+
+// Carry "happened" statement indexes over to an edited game.
+export function migrateCalled(oldGame, newGame, called) {
+  if (oldGame.s.length === newGame.s.length) return [...called].filter((i) => i < newGame.s.length);
+  const byText = new Map(newGame.s.map((s, i) => [s.toLowerCase(), i]));
+  return [...called].map((i) => byText.get(String(oldGame.s[i] || '').toLowerCase())).filter((i) => i !== undefined);
+}
+
+// Carry a player's marked cells over to an edited game.
+export function migrateMarks(oldGame, newGame, playerName, marks) {
+  if (layoutKept(oldGame, newGame)) return [...marks];
+  const oldCard = makeCard(oldGame, playerName);
+  const newCard = makeCard(newGame, playerName);
+  const cellOf = new Map(newCard.map((si, c) => [si === -1 ? null : newGame.s[si].toLowerCase(), c]));
+  const out = [];
+  for (const c of marks) {
+    const si = oldCard[c];
+    if (si === undefined || si === -1) continue;
+    const nc = cellOf.get(oldGame.s[si].toLowerCase());
+    if (nc !== undefined) out.push(nc);
+  }
+  return out;
+}
+
+// ---------- CSV import ----------
+
+// Minimal RFC 4180 CSV parser: quoted fields, "" escapes, commas/newlines in quotes.
+export function parseCsv(text) {
+  const rows = [];
+  let row = [], field = '', q = false;
+  const src = String(text || '').replace(/^\uFEFF/, '');
+  // Excel in some locales saves with ";" and TSV uses tabs: pick by the first line.
+  const first = src.split(/\r?\n/, 1)[0];
+  const sep = first.includes(',') ? ',' : first.includes('\t') ? '\t' : first.includes(';') ? ';' : ',';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (q) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') { field += '"'; i++; } else q = false;
+      } else field += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === sep) { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && src[i + 1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += ch;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+const CSV_HEADER = /^(statements?|options?|items?|squares?|text|prompts?|bingo)$/i;
+
+// Every non-empty cell becomes a statement (read row by row). A lone header
+// like "Statement" or "Options" on the first row is skipped.
+export function statementsFromCsv(text) {
+  const rows = parseCsv(text).map((r) => r.map((c) => c.replace(/\s+/g, ' ').trim()).filter(Boolean)).filter((r) => r.length);
+  if (rows.length && rows[0].every((c) => CSV_HEADER.test(c))) rows.shift();
+  return rows.flat();
 }
 
 // ---------- cards ----------
