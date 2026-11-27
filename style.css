@@ -89,6 +89,11 @@ textarea { resize: vertical; min-height: 180px; }
 .hint.warn, .error { color: var(--bad); }
 .error:empty { display: none; }
 .center { text-align: center; }
+.row.start { justify-content: flex-start; margin: -4px 0 0; }
+.spell { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.spell:empty { display: none; }
+.chip { padding: 4px 10px; border-radius: 999px; font-size: .85rem; background: var(--warn-bg); color: var(--warn); border: 1px solid var(--line); }
+.chip.all { background: var(--surface); color: var(--accent); }
 
 .list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .list li { display: flex; gap: 6px; align-items: center; }

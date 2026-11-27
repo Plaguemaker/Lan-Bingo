@@ -1,6 +1,7 @@
 import * as core from './core.js';
 import qrcode from '../vendor/qrcode.mjs';
 import { startScanner } from './scanner.js';
+import { findMisspellings, applyFix } from './spell.js';
 
 const app = document.getElementById('app');
 const BASE_URL = location.origin + location.pathname;
@@ -121,45 +122,114 @@ function openGame(gid) {
   return joinView(gid);
 }
 
-function hostSetup(prefill = {}) {
-  render(`${header('New game')}
+// editGid: when set, edit that hosted game's statements instead of creating a new one.
+function hostSetup(prefill = {}, editGid = null) {
+  const editing = editGid && entry(editGid);
+  const orig = editing ? editing.game : null;
+  if (orig) {
+    prefill = { title: orig.t, statements: orig.s.join('\n'), size: orig.n, win: orig.w, free: orig.f };
+  }
+  const lock = orig ? 'disabled' : '';
+  render(`${header(orig ? 'Edit statements' : 'New game')}
   <main>
     <form id="setup" class="stack">
-      <label>Game name<input name="title" maxlength="60" value="${esc(prefill.title || '')}" placeholder="Office Bingo"></label>
-      <label>Statements, one per line
-        <textarea name="statements" rows="10" placeholder="Someone says &quot;you're on mute&quot;&#10;A dog barks&#10;The Wi-Fi drops">${esc(prefill.statements || '')}</textarea>
-      </label>
+      ${orig ? '<p class="hint">Fix typos or swap statements. Players keep their cards: if the number of statements stays the same, every square stays in place and only the wording changes. After saving, players scan the game code again to see the new wording.</p>' : ''}
+      <label>Game name<input name="title" maxlength="60" value="${esc(prefill.title || '')}" placeholder="Office Bingo" spellcheck="true"></label>
+      <label for="statements">Statements, one per line</label>
+      <textarea id="statements" name="statements" rows="10" spellcheck="true" autocorrect="on" autocapitalize="sentences" lang="${esc(document.documentElement.lang || 'en')}" placeholder="Someone says &quot;you're on mute&quot;&#10;A dog barks&#10;The Wi-Fi drops">${esc(prefill.statements || '')}</textarea>
+      <div class="row start">
+        <button type="button" class="secondary small" id="upload">Upload CSV or text file</button>
+        <input type="file" id="file" accept=".csv,.tsv,.txt,text/csv,text/plain,text/tab-separated-values" hidden>
+      </div>
+      <div id="spell" class="spell" aria-live="polite"></div>
       <p class="hint" id="count"></p>
       <div class="grid2">
         <label>Grid size
-          <select name="size">${[3, 4, 5, 6, 7].map((n) => `<option value="${n}" ${n === (prefill.size || 5) ? 'selected' : ''}>${n} × ${n}</option>`).join('')}</select>
+          <select name="size" ${lock}>${[3, 4, 5, 6, 7].map((n) => `<option value="${n}" ${n === (prefill.size || 5) ? 'selected' : ''}>${n} × ${n}</option>`).join('')}</select>
         </label>
         <label>To win
-          <select name="win"><option value="line">Any line</option><option value="full" ${prefill.win === 'full' ? 'selected' : ''}>Full card</option></select>
+          <select name="win" ${lock}><option value="line">Any line</option><option value="full" ${prefill.win === 'full' ? 'selected' : ''}>Full card</option></select>
         </label>
       </div>
-      <label class="check"><input type="checkbox" name="free" ${prefill.free === false ? '' : 'checked'}> Free space in the centre (odd sizes)</label>
+      <label class="check"><input type="checkbox" name="free" ${prefill.free === false ? '' : 'checked'} ${lock}> Free space in the centre (odd sizes)</label>
+      ${orig ? '<p class="hint">Grid size, win rule and free space are fixed once a game has started, so existing cards stay valid.</p>' : ''}
       <p class="error" id="err" role="alert"></p>
-      <button class="primary big" type="submit">Create game</button>
+      <button class="primary big" type="submit">${orig ? 'Save changes' : 'Create game'}</button>
+      ${orig ? '<button class="secondary" type="button" id="cancel">Cancel</button>' : ''}
     </form>
   </main>`);
   bindNav();
   const form = app.querySelector('#setup');
+  const box = form.statements;
   const update = () => {
-    const n = core.parseStatements(form.statements.value).length;
+    const n = core.parseStatements(box.value).length;
     const need = core.cellsNeeded(+form.size.value, form.free.checked);
     const el = app.querySelector('#count');
-    el.textContent = `${n} statement${n === 1 ? '' : 's'} · each card needs ${need}${n < need ? ` (add ${need - n} more)` : n > need ? ', so every card gets a different mix' : ''}`;
+    let msg = `${n} statement${n === 1 ? '' : 's'} · each card needs ${need}${n < need ? ` (add ${need - n} more)` : n > need ? ', so every card gets a different mix' : ''}`;
+    if (orig && n >= need && n !== orig.s.length) msg += `. You had ${orig.s.length}: changing the count reshuffles every card (marks on statements you kept carry over).`;
+    el.textContent = msg;
     el.classList.toggle('warn', n < need);
+    updateSpell();
+  };
+  const updateSpell = () => {
+    const found = findMisspellings(box.value + '\n' + form.title.value);
+    const el = app.querySelector('#spell');
+    el.innerHTML = found.length ? `<span class="hint">Possible typos:</span> ${found.map((f) => `<button type="button" class="chip" data-fix="${esc(f.word)}" title="Replace ${f.count > 1 ? `all ${f.count}` : ''}">${esc(f.word)} → ${esc(f.fix)}</button>`).join('')}${found.length > 1 ? '<button type="button" class="chip all" data-fixall>Fix all</button>' : ''}` : '';
+    el.querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', () => {
+      box.value = applyFix(box.value, b.dataset.fix);
+      form.title.value = applyFix(form.title.value, b.dataset.fix);
+      update();
+    }));
+    el.querySelectorAll('[data-fixall]').forEach((b) => b.addEventListener('click', () => {
+      for (const f of found) {
+        box.value = applyFix(box.value, f.word);
+        form.title.value = applyFix(form.title.value, f.word);
+      }
+      update();
+    }));
   };
   form.addEventListener('input', update);
   update();
+  on('#cancel', 'click', () => hostGame(editGid));
+  const file = app.querySelector('#file');
+  on('#upload', 'click', () => file.click());
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    const err = app.querySelector('#err');
+    if (f.size > 1024 * 1024) { err.textContent = 'That file is over 1 MB. A Bingo list should be much smaller.'; return; }
+    try {
+      const text = await f.text();
+      const added = /\.txt$/i.test(f.name) ? core.parseStatements(text) : core.statementsFromCsv(text);
+      if (!added.length) { err.textContent = `No statements found in ${f.name}.`; return; }
+      const before = core.parseStatements(box.value);
+      const merged = core.parseStatements([...before, ...added].join('\n'));
+      box.value = merged.join('\n');
+      err.textContent = '';
+      toast(`Added ${merged.length - before.length} statement${merged.length - before.length === 1 ? '' : 's'} from ${f.name}`);
+      update();
+    } catch {
+      err.textContent = `Couldn't read ${f.name}.`;
+    }
+  });
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     try {
+      const statements = core.parseStatements(box.value);
+      if (orig) {
+        const game = core.editGame(orig, { title: form.title.value, statements });
+        const code = await core.encodeGame(game);
+        const e = entry(editGid);
+        const patch = { code, game, called: core.migrateCalled(orig, game, e.called) };
+        if (e.name) patch.marks = core.migrateMarks(orig, game, e.name, e.marks);
+        upsert(editGid, patch);
+        toast('Saved. Ask players to scan the game code again.');
+        return hostGame(editGid);
+      }
       const game = core.createGame({
         title: form.title.value,
-        statements: core.parseStatements(form.statements.value),
+        statements,
         size: +form.size.value,
         free: form.free.checked,
         win: form.win.value,
@@ -185,10 +255,12 @@ function hostGame(gid, tab = 'share') {
     <nav class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" aria-selected="${k === tab}" data-tab="${k}">${v}</button>`).join('')}</nav>
     ${tab === 'share' ? `
       ${qrBlock(url, `Players scan this to join. ${g.n}×${g.n}, ${g.s.length} statements, ${g.w === 'full' ? 'full card' : 'any line'} wins.`)}
+      ${g.r ? `<p class="banner">Statements updated (version ${g.r + 1}). Players who joined earlier should scan this code again to see the new wording. Their cards and marks carry over.</p>` : ''}
       <p class="hint">Players only need this code once. After that the game works offline, so people can come and go.</p>
       <div class="row">${e.name
         ? `<button class="secondary" id="mycard">My card (${esc(e.name)})</button>`
-        : '<button class="secondary" id="play">Play too</button>'}</div>
+        : '<button class="secondary" id="play">Play too</button>'}
+        <button class="secondary" id="edit">Edit statements</button></div>
     ` : ''}
     ${tab === 'called' ? `
       <p class="hint">Tick statements as they happen. When someone calls Bingo, unticked squares in their line get flagged for you to confirm.</p>
@@ -204,6 +276,7 @@ function hostGame(gid, tab = 'share') {
   on('[data-share]', 'click', () => share(url, g.t));
   on('#play', 'click', () => joinView(gid));
   on('#mycard', 'click', () => cardView(gid));
+  on('#edit', 'click', () => hostSetup({}, gid));
   on('#scanclaim', 'click', () => scanView());
   on('[data-call]', 'change', (ev) => {
     const i = +ev.currentTarget.dataset.call;
@@ -363,7 +436,15 @@ async function joinFromCode(code) {
   try {
     const game = await core.decodeGame(code);
     const gid = core.gameId(game);
-    if (!entry(gid)) upsert(gid, { code, game, host: false });
+    const e = entry(gid);
+    if (!e) upsert(gid, { code, game, host: false });
+    else if ((game.r || 0) > (e.game.r || 0)) {
+      // The host fixed the statements: take the new wording, keep this player's card and marks.
+      const patch = { code, game, called: core.migrateCalled(e.game, game, e.called) };
+      if (e.name) patch.marks = core.migrateMarks(e.game, game, e.name, e.marks);
+      upsert(gid, patch);
+      toast('The host updated the statements');
+    }
     openGame(gid);
   } catch (err) {
     errorView(`Couldn't read that game: ${err.message}`);
